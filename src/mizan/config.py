@@ -3,12 +3,19 @@ from __future__ import annotations
 
 import ast
 import json
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .estimator import BYTES_PER_PARAM, LORA_TARGETS
+
+try:
+    import tomllib as _toml
+except ModuleNotFoundError:
+    try:
+        import tomli as _toml
+    except ModuleNotFoundError:
+        _toml = None
 
 __all__ = ["load_config", "lint_config", "Issue", "KNOWN_KEYS", "KNOWN_TASKS"]
 
@@ -25,7 +32,7 @@ KNOWN_TRAINING_KEYS = {
 }
 KNOWN_DATA_KEYS = {"train", "eval", "format", "val_split"}
 KNOWN_MIZAN_KEYS = {"gpu_gib", "seq_len", "quant", "optimizer", "flash_attention",
-                   "loss_upcast_fp32", "cuda_overhead_mb", "fragmentation"}
+                   "loss_upcast_fp32", "cuda_overhead_mb", "fragmentation", "calibration"}
 
 
 @dataclass
@@ -135,6 +142,31 @@ def _mini_yaml(text: str) -> dict[str, Any]:
     return root
 
 
+def _mini_toml(text: str) -> dict[str, Any]:
+    root: dict[str, Any] = {}
+    current = root
+    for raw in text.splitlines():
+        line = _strip_comment(raw).strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            path = line[1:-1].strip().split(".")
+            current = root
+            for part in path:
+                key = part.strip().strip("\"'")
+                child = current.get(key)
+                if not isinstance(child, dict):
+                    child = {}
+                    current[key] = child
+                current = child
+            continue
+        if "=" not in line:
+            raise ValueError(f"TOML line not understood: {raw!r}")
+        key, value = line.split("=", 1)
+        current[key.strip().strip("\"'")] = _scalar(value)
+    return root
+
+
 def load_config(path: str | Path) -> dict[str, Any]:
     p = Path(path).expanduser()
     if not p.is_file():
@@ -144,8 +176,11 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if suffix == ".json":
         data = json.loads(text)
     elif suffix == ".toml":
-        with p.open("rb") as fh:
-            data = tomllib.load(fh)
+        if _toml is None:
+            data = _mini_toml(text)
+        else:
+            with p.open("rb") as fh:
+                data = _toml.load(fh)
     elif suffix in (".yaml", ".yml"):
         try:
             import yaml
@@ -263,6 +298,9 @@ def lint_config(cfg: dict[str, Any], *, strict: bool = False) -> list[Issue]:
         gpu = _num(mizan.get("gpu_gib"))
         if gpu is not None and not (1 <= gpu <= 1024):
             issues.append(Issue("error", "mizan.gpu_gib", "looks out of range (1-1024 GiB)"))
+        cal = _num(mizan.get("calibration"))
+        if cal is not None and not (0.5 <= cal <= 3.0):
+            issues.append(Issue("error", "mizan.calibration", "out of range (0.5-3.0)"))
     elif mizan is not None:
         issues.append(Issue("error", "mizan", "must be a mapping"))
 

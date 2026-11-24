@@ -2,7 +2,7 @@
 
 **وزّن الـ fine-tune حقك قبل ما تشغّله.**
 
-[![CI](https://github.com/XenzV/mizan/actions/workflows/ci.yml/badge.svg)](https://github.com/XenzV/mizan/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/XenzV/mizan)](https://github.com/XenzV/mizan/releases) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/XenzV/mizan/actions/workflows/ci.yml/badge.svg)](https://github.com/XenzV/mizan/actions/workflows/ci.yml) [![Stars](https://img.shields.io/github/stars/XenzV/mizan)](https://github.com/XenzV/mizan/stargazers) [![Release](https://img.shields.io/github/v/release/XenzV/mizan)](https://github.com/XenzV/mizan/releases) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 ميزان أداة سطر أوامر صغيرة تحسب الذاكرة القصوى المطلوبة لتدريب LoRA / QLoRA من أرقام معمارية الموديل ومن ملف الإعدادات. تشتغل في أجزاء من الثانية، ما تحتاج PyTorch ولا CUDA، وما تنزّل أوزان ولا تتصل بأي سيرفر.
 
@@ -23,7 +23,7 @@ pip install -e .
 mizan --help
 ```
 
-يحتاج Python 3.10 فأعلى. بدون تبعيات وقت التشغيل. ملفات YAML تشتغل بالparser المدمج، وإذا تبي YAML كامل ثبّت `pip install -e ".[yaml]"`.
+يحتاج Python 3.10 فأعلى. بدون تبعيات وقت التشغيل. على Python 3.10 يشتغل parser الـ TOML المدمج (لأن `tomllib` موجود من 3.11). ملفات YAML تشتغل بالparser المدمج، وإذا تبي YAML كامل ثبّت `pip install -e ".[yaml]"`.
 
 ## الاستخدام
 
@@ -36,6 +36,9 @@ mizan doctor
 mizan presets
 mizan init -m llama-3.1-8b --gpu 8 --out mizan.yaml
 mizan report --config soup.yaml --gpu 8 --out preflight.md
+mizan compare base.yaml tuned.yaml --gpu 8
+mizan sweep -m llama-3.1-8b --gpu 8 --seqs 512,1024,2048 --batches 1,2 --csv sweep.csv
+mizan calibrate -m llama-3.1-8b --seq 512 --measured 6.1
 ```
 
 `--model` يقبل اسم جاهز، أو اختصار (`llama-8b`, `qwen-7b`)، أو معرّف Hugging Face مثل `meta-llama/Llama-3.1-8B-Instruct`، أو مجلد محلي فيه `config.json`. تقدر كمان تمرّر أبعاد المعمارية بنفسك.
@@ -66,6 +69,27 @@ $ mizan fit -m llama-3.1-8b --gpu 8 --seq 512
 
 يفحص الكونفيغ: مفاتيح غير معروفة، بيانات ناقصة، أرقام غير صالحة، أهداف LoRA غلط، وكمّيات خاطئة. يرجّع رمز خروج `1` عند الخطأ، و`--strict` يحوّل التحذيرات لأخطاء. مصمم للـ CI.
 
+### compare و sweep و calibrate
+
+`compare` يقارن كونفيغين جنب بعض ويقول لك أي واحد يسع:
+
+```
+$ mizan compare base.yaml tuned.yaml --gpu 8
+  GiB    verdict
+  6.50   OK
+  7.87   OVER
+  Second config needs 1.37 GiB more than the first.
+```
+
+`sweep` يجرب قائمة أطوال متواليات مع قائمة أحجام batch ويقدر يكتب النتائج CSV.
+
+`calibrate` يربط التقدير بالواقع: شغّل مهمة حقيقية 20 خطوة، مرّر الذروة المقاسة، وميزان يعطيك معامل تحسبه وتحطه في الكونفيغ. بعدها كل `weigh` و`fit` يستخدمون قياسك كأساس.
+
+```yaml
+mizan:
+  calibration: 0.939
+```
+
 ## كيف تحسب الأرقام
 
 | المكوّن | اللي يحسبه |
@@ -76,6 +100,7 @@ $ mizan fit -m llama-3.1-8b --gpu 8 --seq 512
 | `activations` | التنسورات المحفوظة + إعادة حساب طبقة واحدة عند تفعيل checkpointing + مصفوفة الـ logits |
 | `cuda_context` | بدل ثابت للـ runtime، الافتراضي 700 MiB |
 | `fragmentation` | 8% من المجموع الفرعي افتراضياً |
+| `calibration` | معامل اختياري من مهمة مقاسة، يضرب الأوزان وحالات LoRA والتنشيطات؛ ذاكرة CUDA الثابتة ما تتغير |
 
 عدد المعاملات يُشتق من المعمارية، ما ينزّل checkpoint. في Llama-3.1-8B طلع 8.03B، وLoRA رتبة 16 على كل الطبقات طلع 41.9M معامل قابل للتدريب. التفاصيل في [docs/METHOD.md](docs/METHOD.md).
 

@@ -91,6 +91,12 @@ OVER  when estimate > limit
 
 `fit` repeats the estimate over quantization ∈ {4bit, 8bit, bf16, fp32}, checkpointing ∈ {off, on}, and batch sizes ∈ {16, 8, 4, 2, 1}, keeps the first fitting batch per combination, and ranks survivors by a throughput proxy `batch * quant_speed * (0.78 if checkpointing else 1)`. The proxy is a heuristic, not a benchmark.
 
+## Calibration
+
+If a real run reports a measured peak `M` and Mizan estimated `E`, the factor is `M / E`. Adding it as `mizan.calibration` scales `base_weights`, `lora_weights`, `trainable_states` and `activations` before fragmentation is applied. `cuda_context` stays fixed because it does not scale with the model or batch size.
+
+The factor is clamped to 0.5–3.0. A factor near 1 means the default constants are close for your setup; a factor around 1.2 means the estimate was systematically low.
+
 ## What is deliberately not modeled
 
 - Layer streaming / host-RAM base storage (Soup's beta feature).

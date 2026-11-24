@@ -29,3 +29,8 @@ jobs:
         run: python -m mizan weigh -m llama-3.1-8b --gpu 8 --seq 512 --json
       - name: Smoke lint
         run: python -m mizan check -c examples/llama-8b-8gb.yaml --strict
+      - name: Smoke extended commands
+        run: |
+          python -m mizan compare examples/llama-8b-8gb.yaml examples/qwen-7b-8gb.json --gpu 8 --json
+          python -m mizan sweep -m llama-3.1-8b --gpu 8 --seqs 512,1024 --batches 1,2 --json
+          python -m mizan calibrate -m llama-3.1-8b --seq 512 --measured 6.1 --json

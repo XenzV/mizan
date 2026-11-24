@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 from pathlib import Path
@@ -47,6 +48,8 @@ def _add_weigh_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-loss-upcast", dest="loss_upcast_fp32", action="store_false", default=None)
     parser.add_argument("--cuda-overhead-mb", type=int)
     parser.add_argument("--fragmentation", type=float)
+    parser.add_argument("--calibration", type=float, help="scale estimate from a measured run (0.5-3.0)")
+    parser.add_argument("--gpu-index", type=int, default=0, help="which GPU to use when auto-detecting")
     parser.add_argument("--headroom", type=float, default=0.05, help="safety margin (default: 0.05)")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
 
@@ -62,6 +65,9 @@ def build_parser() -> argparse.ArgumentParser:
             "  mizan weigh --config soup.yaml --gpu 8\n"
             "  mizan fit --model ./models/Qwen2.5-7B --gpu 8 --seq 2048\n"
             "  mizan check --config soup.yaml --strict\n"
+            "  mizan compare a.yaml b.yaml --gpu 8\n"
+            "  mizan sweep -m llama-3.1-8b --gpu 8 --seqs 512,1024,2048\n"
+            "  mizan calibrate -m llama-3.1-8b --measured 6.1 --seq 512\n"
             "  mizan doctor\n"
         ),
     )
@@ -77,7 +83,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--config", "-c")
     p.add_argument("--gpu", type=float)
     p.add_argument("--free", action="store_true")
+    p.add_argument("--gpu-index", type=int, default=0)
     p.add_argument("--seq", "--seq-len", dest="seq_len", type=int)
+    p.add_argument("--calibration", type=float)
     p.add_argument("--target-util", type=float, default=0.90,
                    help="fraction of VRAM to stay under (default: 0.90)")
     p.add_argument("--effective-batch", type=int, default=16, help="target effective batch size")
@@ -110,6 +118,39 @@ def build_parser() -> argparse.ArgumentParser:
     _add_weigh_args(p)
     p.add_argument("--out", default="mizan-report.md")
     p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("compare", help="compare two configs side by side")
+    p.add_argument("configs", nargs=2, help="two JSON / TOML / YAML configs")
+    p.add_argument("--gpu", type=float)
+    p.add_argument("--gpu-index", type=int, default=0)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_compare)
+
+    p = sub.add_parser("calibrate", help="derive a calibration factor from a measured peak")
+    _add_model_args(p)
+    p.add_argument("--config", "-c")
+    p.add_argument("--measured", type=float, required=True, help="measured peak in GiB")
+    p.add_argument("--seq", "--seq-len", dest="seq_len", type=int)
+    p.add_argument("--batch", "--batch-size", dest="batch_size", type=int)
+    p.add_argument("--quant")
+    p.add_argument("--lora-rank", type=int)
+    p.add_argument("--gradient-checkpointing", action="store_true", default=None)
+    p.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing", action="store_false")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_calibrate)
+
+    p = sub.add_parser("sweep", help="sweep sequence lengths and batch sizes")
+    _add_model_args(p)
+    p.add_argument("--config", "-c")
+    p.add_argument("--gpu", type=float)
+    p.add_argument("--gpu-index", type=int, default=0)
+    p.add_argument("--seqs", default="512,1024,2048", help="comma-separated sequence lengths")
+    p.add_argument("--batches", default="1,2,4", help="comma-separated micro-batch sizes")
+    p.add_argument("--quant", default="4bit")
+    p.add_argument("--csv", help="write the table to a CSV file")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_sweep)
+
     return parser
 
 
@@ -161,7 +202,8 @@ def _gpu_from(args: argparse.Namespace, cfg: dict[str, Any]) -> float | None:
         return env
     gpus = detect_gpus()
     if gpus:
-        chosen = gpus[0]
+        index = getattr(args, "gpu_index", 0) or 0
+        chosen = gpus[index] if index < len(gpus) else gpus[0]
         return (chosen.free_mib if getattr(args, "free", False) else chosen.total_mib) / 1024
     return None
 
@@ -196,6 +238,12 @@ def _weigh_input(args: argparse.Namespace, cfg: dict[str, Any], spec, **override
     ckpt = pick("gradient_checkpointing", (training, "gradient_checkpointing"), default=True)
     flash = pick("flash_attention", (training, "flash_attention"), (mizan, "flash_attention"), default=True)
     upcast = pick("loss_upcast_fp32", (mizan, "loss_upcast_fp32"), default=True)
+    cal_raw = pick("calibration", (mizan, "calibration"), default=1.0)
+    try:
+        cal = float(cal_raw)
+    except (TypeError, ValueError):
+        print(f"{C.RED}error:{C.RESET} calibration must be a number", file=sys.stderr)
+        raise SystemExit(2) from None
 
     values = dict(
         spec=spec,
@@ -213,6 +261,7 @@ def _weigh_input(args: argparse.Namespace, cfg: dict[str, Any], spec, **override
         flash_attention=bool(flash),
         loss_upcast_fp32=bool(upcast),
         optimizer=optimizer,
+        calibration=cal,
     )
     for key in ("cuda_overhead_mb", "fragmentation"):
         value = getattr(args, key, None)
@@ -250,7 +299,8 @@ def cmd_weigh(args: argparse.Namespace) -> None:
     print(f"  Config  {weight.batch_size}x{weight.seq_len} tok  {C.DIM}|{C.RESET} "
           f"{weight.quant}  {C.DIM}|{C.RESET} "
           f"{'full fine-tune' if weight.full_finetune else f'LoRA r{weight.lora_rank}'}  "
-          f"{C.DIM}|{C.RESET} ckpt {'on' if weight.gradient_checkpointing else 'off'}")
+          f"{C.DIM}|{C.RESET} ckpt {'on' if weight.gradient_checkpointing else 'off'}"
+          + (f"{C.DIM}|{C.RESET} cal {weight.calibration:g}" if weight.calibration != 1.0 else ""))
     print()
     limit_mib = (gpu or 0) * 1024 * (1 - args.headroom)
     for key, value in result.components.items():
@@ -271,7 +321,8 @@ def cmd_weigh(args: argparse.Namespace) -> None:
 
 
 def _fit_candidates(spec, *, gpu: float, seq_len: int, target_util: float,
-                    effective_batch: int, optimizer: str) -> list[dict[str, Any]]:
+                    effective_batch: int, optimizer: str,
+                    calibration: float = 1.0) -> list[dict[str, Any]]:
     combos = [
         ("4bit", False), ("4bit", True),
         ("8bit", False), ("8bit", True),
@@ -284,6 +335,7 @@ def _fit_candidates(spec, *, gpu: float, seq_len: int, target_util: float,
             cfg = WeighInput(
                 spec=spec, seq_len=seq_len, batch_size=batch,
                 quant=quant, gradient_checkpointing=ckpt, optimizer=optimizer,
+                calibration=calibration,
             )
             res = weigh(cfg)
             need = res.total_mib / 1024
@@ -319,6 +371,7 @@ def cmd_fit(args: argparse.Namespace) -> None:
     candidates = _fit_candidates(
         spec, gpu=gpu, seq_len=seq, target_util=target,
         effective_batch=args.effective_batch, optimizer=baseline.optimizer,
+        calibration=baseline.calibration,
     )
     if not candidates:
         print(f"{C.RED}No configuration fits {gpu:.1f} GiB at {seq} tokens "
@@ -330,6 +383,7 @@ def cmd_fit(args: argparse.Namespace) -> None:
     probe = WeighInput(
         spec=spec, seq_len=seq, batch_size=best["batch"], quant=best["quant"],
         gradient_checkpointing=best["checkpointing"], optimizer=baseline.optimizer,
+        calibration=baseline.calibration,
     )
     result = weigh(probe)
 
@@ -499,7 +553,8 @@ def cmd_report(args: argparse.Namespace) -> None:
     issues = lint_config(cfg) if cfg else []
     candidates = (
         _fit_candidates(spec, gpu=gpu, seq_len=weight.seq_len, target_util=0.9,
-                        effective_batch=16, optimizer=weight.optimizer)
+                        effective_batch=16, optimizer=weight.optimizer,
+                        calibration=weight.calibration)
         if gpu else []
     )
 
@@ -559,6 +614,153 @@ def cmd_report(args: argparse.Namespace) -> None:
     ]
     Path(args.out).write_text("\n".join(lines), encoding="utf-8")
     print(f"wrote {args.out} ({status})")
+
+
+def _dummy_args(**changes: Any) -> argparse.Namespace:
+    defaults = dict(
+        model=None, hidden_size=None, intermediate_size=None, num_hidden_layers=None,
+        num_attention_heads=None, num_key_value_heads=None, vocab_size=None, head_dim=None,
+        gpu=None, free=False, gpu_index=0, seq_len=None, batch_size=None, grad_accum=None,
+        quant=None, lora_rank=None, optimizer=None, full_finetune=None,
+        gradient_checkpointing=None, flash_attention=None, loss_upcast_fp32=None,
+        cuda_overhead_mb=None, fragmentation=None, calibration=None,
+        headroom=0.05, json=False,
+    )
+    defaults.update(changes)
+    return argparse.Namespace(**defaults)
+
+
+def _parse_ints(text: str, flag: str) -> list[int]:
+    values: list[int] = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            number = int(part)
+        except ValueError:
+            print(f"{C.RED}error:{C.RESET} {flag} expects integers, got {part!r}", file=sys.stderr)
+            raise SystemExit(2) from None
+        if number <= 0:
+            print(f"{C.RED}error:{C.RESET} {flag} values must be positive", file=sys.stderr)
+            raise SystemExit(2)
+        values.append(number)
+    if not values:
+        print(f"{C.RED}error:{C.RESET} {flag} needs at least one value", file=sys.stderr)
+        raise SystemExit(2)
+    return values
+
+
+def cmd_compare(args: argparse.Namespace) -> None:
+    proxy = _dummy_args(gpu_index=args.gpu_index)
+    gpu = args.gpu if args.gpu is not None else _gpu_from(proxy, {})
+    summaries = []
+    for path in args.configs:
+        cfg = _load_optional(path)
+        spec = _spec_from(proxy, cfg)
+        w = _weigh_input(proxy, cfg, spec)
+        r = weigh(w)
+        status, note = verdict(r, gpu, 0.05)
+        summaries.append({
+            "config": path, "model": spec.name, "total_gib": round(r.total_mib / 1024, 3),
+            "verdict": status, "note": note, "quant": w.quant,
+            "batch": w.batch_size, "seq": w.seq_len,
+            "components_gib": {k: round(v / 1024, 3) for k, v in r.components.items()},
+        })
+    if args.json:
+        print(json.dumps(summaries, indent=2))
+        return
+    print()
+    print(f"{heading('MIZAN / COMPARE')}  gpu={gpu if gpu else 'unknown'}")
+    print()
+    print(table(
+        [[s["config"], s["model"], s["quant"], str(s["batch"]), str(s["seq"]),
+          f"{s['total_gib']:.2f}", s["verdict"]] for s in summaries],
+        ["config", "model", "quant", "batch", "seq", "GiB", "verdict"],
+    ))
+    print()
+    if len(summaries) == 2 and gpu:
+        delta = summaries[1]["total_gib"] - summaries[0]["total_gib"]
+        word = "more" if delta > 0 else "less"
+        print(f"  Second config needs {abs(delta):.2f} GiB {word} than the first.")
+    print()
+
+
+def cmd_calibrate(args: argparse.Namespace) -> None:
+    if args.measured <= 0:
+        print(f"{C.RED}error:{C.RESET} --measured must be positive", file=sys.stderr)
+        raise SystemExit(2)
+    cfg = _load_optional(getattr(args, "config", None))
+    proxy = _dummy_args(
+        model=args.model, seq_len=args.seq_len, batch_size=args.batch_size,
+        quant=args.quant, lora_rank=args.lora_rank,
+        gradient_checkpointing=args.gradient_checkpointing,
+    )
+    spec = _spec_from(proxy, cfg)
+    w = _weigh_input(proxy, cfg, spec)
+    estimated = weigh(w).total_mib / 1024
+    factor = round(args.measured / estimated, 3)
+    clamped = round(max(0.5, min(3.0, factor)), 3)
+    if args.json:
+        print(json.dumps({
+            "model": spec.name, "estimated_gib": round(estimated, 3),
+            "measured_gib": args.measured, "factor": factor, "usable_factor": clamped,
+        }, indent=2))
+        return
+    print()
+    print(f"{heading('MIZAN / CALIBRATE')}  {spec.name}")
+    print(f"  estimated  {estimated:.2f} GiB")
+    print(f"  measured   {args.measured:.2f} GiB")
+    print(f"  factor     {factor:g}")
+    if factor != clamped:
+        print(f"  {C.YELLOW}Clamped to {clamped:g} (allowed 0.5-3.0){C.RESET}")
+    print()
+    print(f"{C.DIM}add to your config:{C.RESET}")
+    print(f"mizan:\n  calibration: {clamped}")
+    print()
+    print(tip("Factor scales weights, LoRA states and activations. CUDA context stays fixed."))
+    print()
+
+
+def cmd_sweep(args: argparse.Namespace) -> None:
+    cfg = _load_optional(getattr(args, "config", None))
+    gpu = args.gpu if args.gpu is not None else _gpu_from(args, cfg)
+    if not gpu:
+        print(f"{C.RED}error:{C.RESET} no GPU size known. Pass --gpu or set MIZAN_GPU_GIB.", file=sys.stderr)
+        raise SystemExit(2)
+    seqs = _parse_ints(args.seqs, "--seqs")
+    batches = _parse_ints(args.batches, "--batches")
+    spec = _spec_from(args, cfg)
+    base = _weigh_input(args, cfg, spec)
+    quant = args.quant or base.quant
+    rows = []
+    for seq in seqs:
+        for batch in batches:
+            w = WeighInput(
+                spec=spec, seq_len=seq, batch_size=batch, quant=quant,
+                gradient_checkpointing=base.gradient_checkpointing,
+                optimizer=base.optimizer, calibration=base.calibration,
+            )
+            r = weigh(w)
+            status, _ = verdict(r, gpu, 0.05)
+            rows.append({"seq": seq, "batch": batch, "gib": round(r.total_mib / 1024, 3),
+                         "verdict": status})
+    if args.csv:
+        with Path(args.csv).open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=["seq", "batch", "gib", "verdict"])
+            writer.writeheader()
+            writer.writerows(rows)
+        if not args.json:
+            print(f"wrote {args.csv}")
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return
+    print()
+    print(f"{heading('MIZAN / SWEEP')}  {spec.name} on {gpu:.1f} GiB, {quant}")
+    print()
+    print(table([[str(r["seq"]), str(r["batch"]), f"{r['gib']:.2f}", r["verdict"]]
+                 for r in rows], ["seq", "batch", "GiB", "verdict"]))
+    print()
 
 
 def main(argv: list[str] | None = None) -> int:

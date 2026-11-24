@@ -51,6 +51,7 @@ class WeighInput:
     cuda_overhead_mb: int = 700
     fragmentation: float = 0.08
     activation_dtype_bytes: int = 2
+    calibration: float = 1.0
 
 
 @dataclass
@@ -85,6 +86,7 @@ class Result:
                 "gradient_checkpointing": self.input.gradient_checkpointing,
                 "full_finetune": self.input.full_finetune,
                 "optimizer": self.input.optimizer,
+                "calibration": self.input.calibration,
             },
         }
 
@@ -156,6 +158,8 @@ def weigh(cfg: WeighInput) -> Result:
         raise ValueError(f"unknown optimizer {cfg.optimizer!r}")
     if cfg.lora_rank <= 0:
         raise ValueError("lora_rank must be positive")
+    if not 0.5 <= cfg.calibration <= 3.0:
+        raise ValueError("calibration must be between 0.5 and 3.0")
 
     spec = cfg.spec
     params = param_counts(spec)
@@ -179,6 +183,9 @@ def weigh(cfg: WeighInput) -> Result:
         "activations": act_mib,
         "cuda_context": float(cfg.cuda_overhead_mb),
     }
+    if cfg.calibration != 1.0:
+        for key in ("base_weights", "lora_weights", "trainable_states", "activations"):
+            components[key] *= cfg.calibration
     subtotal = sum(components.values())
     components["fragmentation"] = subtotal * cfg.fragmentation
     total = subtotal + components["fragmentation"]

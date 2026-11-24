@@ -1,9 +1,10 @@
 import json
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
-from mizan.config import _mini_yaml, lint_config, load_config
+from mizan.config import _mini_toml, _mini_yaml, lint_config, load_config
 
 
 YAML_TEXT = """
@@ -86,6 +87,30 @@ class LintTests(unittest.TestCase):
         cfg = _mini_yaml(YAML_TEXT)
         cfg["training"]["quantization"] = "3bit"
         self.assertTrue(any(i.path == "training.quantization" for i in lint_config(cfg)))
+
+
+class TomlFallbackTests(unittest.TestCase):
+    def test_mini_toml_nested_tables(self):
+        text = 'base = "llama"\n[training]\nbatch_size = 2\nlora_r = 16\n[training.lora]\nr = 8\n'
+        data = _mini_toml(text)
+        self.assertEqual(data["base"], "llama")
+        self.assertEqual(data["training"]["batch_size"], 2)
+        self.assertEqual(data["training"]["lora"]["r"], 8)
+
+    def test_mini_toml_arrays_and_bools(self):
+        data = _mini_toml('targets = ["q", "k"]\nckpt = true\nlr = 2e-5\n')
+        self.assertEqual(data["targets"], ["q", "k"])
+        self.assertIs(data["ckpt"], True)
+        self.assertEqual(data["lr"], 2e-5)
+
+    def test_load_toml_without_stdlib_module(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.toml"
+            path.write_text('base = "x"\n[training]\nbatch_size = 4\n', encoding="utf-8")
+            import mizan.config as cfgmod
+            with unittest.mock.patch.object(cfgmod, "_toml", None):
+                data = load_config(path)
+            self.assertEqual(data["training"]["batch_size"], 4)
 
 
 if __name__ == "__main__":

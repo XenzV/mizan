@@ -94,5 +94,23 @@ class WeighTests(unittest.TestCase):
         self.assertIn("parameters", d)
 
 
+class CalibrationTests(unittest.TestCase):
+    def test_factor_scales_estimate(self):
+        plain = weigh(WeighInput(spec=PRESETS["llama-3.1-8b"], seq_len=512))
+        scaled = weigh(WeighInput(spec=PRESETS["llama-3.1-8b"], seq_len=512, calibration=1.2))
+        self.assertAlmostEqual(scaled.component("base_weights"),
+                               plain.component("base_weights") * 1.2, places=2)
+        self.assertGreater(scaled.total_mib, plain.total_mib)
+
+    def test_context_stays_fixed(self):
+        plain = weigh(WeighInput(spec=PRESETS["llama-3.1-8b"], seq_len=512))
+        scaled = weigh(WeighInput(spec=PRESETS["llama-3.1-8b"], seq_len=512, calibration=1.2))
+        self.assertEqual(plain.component("cuda_context"), scaled.component("cuda_context"))
+
+    def test_bad_factor_rejected(self):
+        with self.assertRaises(ValueError):
+            weigh(WeighInput(spec=PRESETS["llama-3.1-8b"], calibration=5.0))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2,7 +2,7 @@
 
 **Weigh your fine-tune before you run it.**
 
-[![CI](https://github.com/XenzV/mizan/actions/workflows/ci.yml/badge.svg)](https://github.com/XenzV/mizan/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/XenzV/mizan)](https://github.com/XenzV/mizan/releases) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/XenzV/mizan/actions/workflows/ci.yml/badge.svg)](https://github.com/XenzV/mizan/actions/workflows/ci.yml) [![Stars](https://img.shields.io/github/stars/XenzV/mizan)](https://github.com/XenzV/mizan/stargazers) [![Release](https://img.shields.io/github/v/release/XenzV/mizan)](https://github.com/XenzV/mizan/releases) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 Mizan is a small CLI that estimates peak GPU memory for LoRA / QLoRA training from architecture numbers and a training config. It runs in milliseconds, has no runtime dependencies, and never loads model weights or calls a server.
 
@@ -23,7 +23,7 @@ pip install -e .
 mizan --help
 ```
 
-Python 3.10+. No PyTorch, no CUDA toolkit, no model download. YAML configs work with the built-in parser; `pip install -e ".[yaml]"` uses PyYAML when you want full YAML syntax.
+Python 3.10+. No PyTorch, no CUDA toolkit, no model download. On 3.10 the built-in TOML parser is used automatically (`tomllib` only exists in 3.11+). YAML configs work with the built-in parser; `pip install -e ".[yaml]"` uses PyYAML when you want full YAML syntax.
 
 ## Use
 
@@ -36,6 +36,9 @@ mizan doctor
 mizan presets
 mizan init --model llama-3.1-8b --gpu 8 --out mizan.yaml
 mizan report --config soup.yaml --gpu 8 --out preflight.md
+mizan compare base.yaml tuned.yaml --gpu 8
+mizan sweep -m llama-3.1-8b --gpu 8 --seqs 512,1024,2048 --batches 1,2 --csv sweep.csv
+mizan calibrate -m llama-3.1-8b --seq 512 --measured 6.1
 ```
 
 `--model` accepts a preset, an alias (`llama-8b`, `qwen-7b`), a Hugging Face id like `meta-llama/Llama-3.1-8B-Instruct`, or a local folder containing `config.json`. You can also pass the five architecture flags directly.
@@ -82,6 +85,27 @@ Lints a config for unknown keys, missing data, invalid numbers, bad LoRA targets
 - run: mizan weigh --config soup.yaml --gpu 8 --json > preflight.json
 ```
 
+### Compare, sweep, calibrate
+
+`compare` puts two configs side by side and shows which one fits:
+
+```
+$ mizan compare base.yaml tuned.yaml --gpu 8
+  GiB    verdict
+  6.50   OK
+  7.87   OVER
+  Second config needs 1.37 GiB more than the first.
+```
+
+`sweep` crosses a list of sequence lengths with a list of batch sizes and can write CSV.
+
+`calibrate` closes the loop with reality: run a real 20-step job, pass the measured peak, and Mizan prints a factor to paste into your config. After that, every `weigh` and `fit` uses your measurement as the baseline.
+
+```yaml
+mizan:
+  calibration: 0.939
+```
+
 ## How the estimate is built
 
 | Component | What it accounts for |
@@ -92,6 +116,7 @@ Lints a config for unknown keys, missing data, invalid numbers, bad LoRA targets
 | `activations` | saved layer tensors, one recomputed layer when checkpointing, and the logits buffer |
 | `cuda_context` | fixed runtime allowance, default 700 MiB (`--cuda-overhead-mb`) |
 | `fragmentation` | 8% of the subtotal by default (`--fragmentation`) |
+| `calibration` | optional multiplier from a measured run, applied to weights, LoRA states and activations; CUDA context stays fixed |
 
 Parameter counts are derived from the architecture, not from a downloaded checkpoint. For Llama-3.1-8B this gives 8.03B; LoRA r16 on all projections gives 41.9M trainable params. See [docs/METHOD.md](docs/METHOD.md) for every formula and knob.
 
