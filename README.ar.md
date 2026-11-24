@@ -2,6 +2,8 @@
 
 **وزّن الـ fine-tune حقك قبل ما تشغّله.**
 
+[![CI](https://github.com/XenzV/mizan/actions/workflows/ci.yml/badge.svg)](https://github.com/XenzV/mizan/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/XenzV/mizan)](https://github.com/XenzV/mizan/releases) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 ميزان أداة سطر أوامر صغيرة تحسب الذاكرة القصوى المطلوبة لتدريب LoRA / QLoRA من أرقام معمارية الموديل ومن ملف الإعدادات. تشتغل في أجزاء من الثانية، ما تحتاج PyTorch ولا CUDA، وما تنزّل أوزان ولا تتصل بأي سيرفر.
 
 [English](README.md) · [الطريقة](docs/METHOD.md)

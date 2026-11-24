@@ -2,6 +2,8 @@
 
 **Weigh your fine-tune before you run it.**
 
+[![CI](https://github.com/XenzV/mizan/actions/workflows/ci.yml/badge.svg)](https://github.com/XenzV/mizan/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/XenzV/mizan)](https://github.com/XenzV/mizan/releases) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Mizan is a small CLI that estimates peak GPU memory for LoRA / QLoRA training from architecture numbers and a training config. It runs in milliseconds, has no runtime dependencies, and never loads model weights or calls a server.
 
 [العربية](README.ar.md) · [Method](docs/METHOD.md) · [Issues](https://github.com/XenzV/mizan/issues)
