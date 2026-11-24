@@ -1,0 +1,25 @@
+{
+  "base": "qwen2.5-7b",
+  "task": "sft",
+  "data": {
+    "train": "./data/train.jsonl",
+    "format": "sharegpt"
+  },
+  "training": {
+    "epochs": 2,
+    "lr": 1e-5,
+    "batch_size": 1,
+    "gradient_accumulation": 16,
+    "seq_len": 1024,
+    "quantization": "4bit",
+    "gradient_checkpointing": true,
+    "lora": {
+      "r": 16,
+      "target_modules": ["q", "k", "v", "o", "gate", "up", "down"]
+    }
+  },
+  "output": "./output",
+  "mizan": {
+    "gpu_gib": 8
+  }
+}

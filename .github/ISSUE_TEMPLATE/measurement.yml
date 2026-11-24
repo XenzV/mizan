@@ -1,0 +1,42 @@
+name: Measured peak vs estimate
+description: Report a real training peak so the constants can be corrected
+title: "measurement: "
+labels: [measurement]
+body:
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      placeholder: llama-3.1-8b
+    validations:
+      required: true
+  - type: input
+    id: config
+    attributes:
+      label: Config link or paste
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and VRAM
+      placeholder: RTX 3050 Laptop 4 GB
+    validations:
+      required: true
+  - type: input
+    id: estimated
+    attributes:
+      label: mizan weigh output
+    validations:
+      required: true
+  - type: input
+    id: measured
+    attributes:
+      label: Measured peak (nvidia-smi / torch.max_memory_allocated)
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Attention backend, checkpointing, batch size, sequence length, trainer version.

@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mizan-cli"
+version = "0.1.0"
+description = "Weigh your LLM fine-tune before you run it. No PyTorch, no CUDA, no downloads."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "XenzV" }]
+keywords = ["llm", "fine-tuning", "lora", "qlora", "vram", "cli", "preflight", "mlops"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Build Tools",
+]
+dependencies = []
+
+[project.optional-dependencies]
+yaml = ["PyYAML>=6.0"]
+dev = ["pytest>=8.0", "PyYAML>=6.0", "ruff>=0.6"]
+
+[project.scripts]
+mizan = "mizan.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/XenzV/mizan"
+Repository = "https://github.com/XenzV/mizan"
+Issues = "https://github.com/XenzV/mizan/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
